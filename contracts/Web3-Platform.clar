@@ -7,6 +7,12 @@
 (define-constant err-already-exists (err u105))
 (define-constant err-invalid-amount (err u106))
 (define-constant err-dispute-exists (err u107))
+(define-constant skill-web-dev u1)
+(define-constant skill-mobile-dev u2)
+(define-constant skill-design u3)
+(define-constant skill-writing u4)
+(define-constant skill-marketing u5)
+(define-constant skill-data-science u6)
 
 (define-data-var next-project-id uint u1)
 (define-data-var next-milestone-id uint u1)
@@ -372,4 +378,98 @@
 
 (define-read-only (get-platform-fee-rate)
   (var-get platform-fee-rate)
+)
+
+
+(define-map freelancer-skills
+  { freelancer: principal, skill-id: uint }
+  { proficiency-level: uint, total-ratings: uint, average-rating: uint }
+)
+
+(define-map project-skills
+  { project-id: uint }
+  { required-skills: (list 5 uint), min-rating: uint }
+)
+
+(define-public (register-freelancer-skill (skill-id uint) (proficiency-level uint))
+  (begin
+    (asserts! (<= skill-id u6) err-invalid-amount)
+    (asserts! (and (>= proficiency-level u1) (<= proficiency-level u5)) err-invalid-amount)
+    (map-set freelancer-skills
+      { freelancer: tx-sender, skill-id: skill-id }
+      { proficiency-level: proficiency-level, total-ratings: u0, average-rating: u0 }
+    )
+    (ok true)
+  )
+)
+
+(define-public (set-project-skill-requirements (project-id uint) (required-skills (list 5 uint)) (min-rating uint))
+  (let
+    (
+      (project (unwrap! (map-get? projects { project-id: project-id }) err-not-found))
+    )
+    (asserts! (is-eq (get client project) tx-sender) err-unauthorized)
+    (map-set project-skills
+      { project-id: project-id }
+      { required-skills: required-skills, min-rating: min-rating }
+    )
+    (ok true)
+  )
+)
+
+(define-public (rate-freelancer-skill (project-id uint) (skill-id uint) (rating uint))
+  (let
+    (
+      (project (unwrap! (map-get? projects { project-id: project-id }) err-not-found))
+      (skill-data (unwrap! (map-get? freelancer-skills { freelancer: (get freelancer project), skill-id: skill-id }) err-not-found))
+      (new-total (+ (get total-ratings skill-data) u1))
+      (new-average (/ (+ (* (get average-rating skill-data) (get total-ratings skill-data)) rating) new-total))
+    )
+    (asserts! (is-eq (get client project) tx-sender) err-unauthorized)
+    (asserts! (is-eq (get status project) "completed") err-invalid-status)
+    (asserts! (and (>= rating u1) (<= rating u5)) err-invalid-amount)
+    (map-set freelancer-skills
+      { freelancer: (get freelancer project), skill-id: skill-id }
+      (merge skill-data { total-ratings: new-total, average-rating: new-average })
+    )
+    (ok true)
+  )
+)
+
+(define-read-only (get-freelancer-skill (freelancer principal) (skill-id uint))
+  (map-get? freelancer-skills { freelancer: freelancer, skill-id: skill-id })
+)
+
+(define-read-only (get-project-skill-requirements (project-id uint))
+  (map-get? project-skills { project-id: project-id })
+)
+
+(define-read-only (check-freelancer-qualification (freelancer principal) (project-id uint))
+  (let
+    (
+      (requirements (map-get? project-skills { project-id: project-id }))
+    )
+    (match requirements
+      some-req (>= (get-freelancer-min-rating freelancer (get required-skills some-req)) (get min-rating some-req))
+      true
+    )
+  )
+)
+
+(define-private (get-freelancer-min-rating (freelancer principal) (skills (list 5 uint)))
+  (fold check-skill-rating skills u5)
+)
+
+(define-private (check-skill-rating (skill-id uint) (min-so-far uint))
+  (let
+    (
+      (skill-data (map-get? freelancer-skills { freelancer: tx-sender, skill-id: skill-id }))
+    )
+    (match skill-data
+      some-skill (if (<= (get average-rating some-skill) min-so-far)
+                    (get average-rating some-skill)
+                    min-so-far)
+      u0
+    )
+  )
 )
