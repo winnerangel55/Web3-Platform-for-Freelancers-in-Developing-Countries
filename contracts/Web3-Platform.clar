@@ -473,3 +473,109 @@
     )
   )
 )
+
+(define-data-var next-template-id uint u1)
+
+(define-map project-templates
+  { template-id: uint }
+  {
+    creator: principal,
+    title: (string-ascii 100),
+    description: (string-ascii 300),
+    category: (string-ascii 50),
+    estimated-duration: uint,
+    min-budget: uint,
+    max-budget: uint,
+    required-skills: (list 3 uint),
+    min-rating: uint,
+    is-active: bool,
+    usage-count: uint,
+    created-at: uint
+  }
+)
+
+(define-map template-milestones
+  { template-id: uint, milestone-index: uint }
+  {
+    title: (string-ascii 100),
+    description: (string-ascii 200),
+    percentage: uint,
+    estimated-days: uint
+  }
+)
+
+(define-public (create-template 
+  (title (string-ascii 100))
+  (description (string-ascii 300))
+  (category (string-ascii 50))
+  (estimated-duration uint)
+  (min-budget uint)
+  (max-budget uint)
+  (required-skills (list 3 uint))
+  (min-rating uint))
+  (let
+    (
+      (template-id (var-get next-template-id))
+      (user-profile (unwrap! (map-get? user-profiles { user: tx-sender }) err-not-found))
+    )
+    (asserts! (get is-verified user-profile) err-unauthorized)
+    (asserts! (>= (get reputation user-profile) u150) err-unauthorized)
+    (asserts! (and (> min-budget u0) (>= max-budget min-budget)) err-invalid-amount)
+    (asserts! (> estimated-duration u0) err-invalid-amount)
+    (map-set project-templates
+      { template-id: template-id }
+      {
+        creator: tx-sender,
+        title: title,
+        description: description,
+        category: category,
+        estimated-duration: estimated-duration,
+        min-budget: min-budget,
+        max-budget: max-budget,
+        required-skills: required-skills,
+        min-rating: min-rating,
+        is-active: true,
+        usage-count: u0,
+        created-at: stacks-block-height
+      }
+    )
+    (var-set next-template-id (+ template-id u1))
+    (ok template-id)
+  )
+)
+
+(define-public (add-template-milestone
+  (template-id uint)
+  (milestone-index uint)
+  (title (string-ascii 100))
+  (description (string-ascii 200))
+  (percentage uint)
+  (estimated-days uint))
+  (let
+    (
+      (template (unwrap! (map-get? project-templates { template-id: template-id }) err-not-found))
+    )
+    (asserts! (is-eq (get creator template) tx-sender) err-unauthorized)
+    (asserts! (get is-active template) err-invalid-status)
+    (asserts! (and (> percentage u0) (<= percentage u100)) err-invalid-amount)
+    (asserts! (> estimated-days u0) err-invalid-amount)
+    (map-set template-milestones
+      { template-id: template-id, milestone-index: milestone-index }
+      {
+        title: title,
+        description: description,
+        percentage: percentage,
+        estimated-days: estimated-days
+      }
+    )
+    (ok true)
+  )
+)
+
+(define-read-only (get-template (template-id uint))
+  (map-get? project-templates { template-id: template-id })
+)
+
+(define-read-only (get-template-milestone (template-id uint) (milestone-index uint))
+  (map-get? template-milestones { template-id: template-id, milestone-index: milestone-index })
+)
