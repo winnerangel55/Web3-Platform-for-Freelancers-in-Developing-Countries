@@ -19,6 +19,11 @@
 (define-data-var next-dispute-id uint u1)
 (define-data-var platform-fee-rate uint u250)
 
+(define-constant err-already-favorited (err u108))
+(define-constant err-not-favorited (err u109))
+
+(define-data-var next-favorite-id uint u1)
+
 (define-map projects
   { project-id: uint }
   {
@@ -578,4 +583,82 @@
 
 (define-read-only (get-template-milestone (template-id uint) (milestone-index uint))
   (map-get? template-milestones { template-id: template-id, milestone-index: milestone-index })
+)
+
+
+(define-map user-favorites
+  { user: principal, project-id: uint }
+  { favorited-at: uint, is-active: bool }
+)
+
+(define-map project-favorite-count
+  { project-id: uint }
+  { count: uint }
+)
+
+(define-map user-favorite-list
+  { user: principal, favorite-id: uint }
+  { project-id: uint, added-at: uint }
+)
+
+(define-public (add-to-favorites (project-id uint))
+  (let
+    (
+      (project (unwrap! (map-get? projects { project-id: project-id }) err-not-found))
+      (existing-favorite (map-get? user-favorites { user: tx-sender, project-id: project-id }))
+      (favorite-id (var-get next-favorite-id))
+      (current-count (default-to { count: u0 } (map-get? project-favorite-count { project-id: project-id })))
+    )
+    (asserts! (not (is-eq (get freelancer project) tx-sender)) err-unauthorized)
+    (asserts! (is-eq (get status project) "active") err-invalid-status)
+    (asserts! (is-none existing-favorite) err-already-favorited)
+    (map-set user-favorites
+      { user: tx-sender, project-id: project-id }
+      { favorited-at: stacks-block-height, is-active: true }
+    )
+    (map-set user-favorite-list
+      { user: tx-sender, favorite-id: favorite-id }
+      { project-id: project-id, added-at: stacks-block-height }
+    )
+    (map-set project-favorite-count
+      { project-id: project-id }
+      { count: (+ (get count current-count) u1) }
+    )
+    (var-set next-favorite-id (+ favorite-id u1))
+    (ok true)
+  )
+)
+
+(define-public (remove-from-favorites (project-id uint))
+  (let
+    (
+      (existing-favorite (unwrap! (map-get? user-favorites { user: tx-sender, project-id: project-id }) err-not-favorited))
+      (current-count (unwrap! (map-get? project-favorite-count { project-id: project-id }) err-not-found))
+    )
+    (asserts! (get is-active existing-favorite) err-not-favorited)
+    (map-set user-favorites
+      { user: tx-sender, project-id: project-id }
+      (merge existing-favorite { is-active: false })
+    )
+    (map-set project-favorite-count
+      { project-id: project-id }
+      { count: (- (get count current-count) u1) }
+    )
+    (ok true)
+  )
+)
+
+(define-read-only (is-project-favorited (user principal) (project-id uint))
+  (match (map-get? user-favorites { user: user, project-id: project-id })
+    some-fav (get is-active some-fav)
+    false
+  )
+)
+
+(define-read-only (get-project-favorite-count (project-id uint))
+  (default-to { count: u0 } (map-get? project-favorite-count { project-id: project-id }))
+)
+
+(define-read-only (get-user-favorite (user principal) (project-id uint))
+  (map-get? user-favorites { user: user, project-id: project-id })
 )
