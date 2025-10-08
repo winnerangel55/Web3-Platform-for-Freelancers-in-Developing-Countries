@@ -14,6 +14,16 @@
 (define-constant skill-marketing u5)
 (define-constant skill-data-science u6)
 
+(define-constant err-invalid-stake (err u110))
+(define-constant err-referral-not-found (err u111))
+(define-constant err-already-referred (err u112))
+(define-constant err-self-referral (err u113))
+(define-constant err-stake-locked (err u114))
+
+(define-data-var next-referral-id uint u1)
+(define-data-var referral-reward-rate uint u500)
+(define-data-var min-referral-stake uint u100000)
+
 (define-data-var next-project-id uint u1)
 (define-data-var next-milestone-id uint u1)
 (define-data-var next-dispute-id uint u1)
@@ -661,4 +671,108 @@
 
 (define-read-only (get-user-favorite (user principal) (project-id uint))
   (map-get? user-favorites { user: user, project-id: project-id })
+)
+
+
+(define-map referrals
+  { referral-id: uint }
+  { referrer: principal, referee: principal, stake-amount: uint, projects-completed: uint, total-earnings: uint, rewards-claimed: uint, created-at: uint, is-active: bool }
+)
+
+(define-map user-referrals
+  { referrer: principal, referee: principal }
+  { referral-id: uint }
+)
+
+(define-map referrer-stats
+  { referrer: principal }
+  { total-referrals: uint, active-referrals: uint, total-rewards: uint, success-rate: uint }
+)
+
+(define-public (register-referral (referee principal))
+  (let
+    (
+      (referral-id (var-get next-referral-id))
+      (stake (var-get min-referral-stake))
+      (existing-ref (map-get? user-referrals { referrer: tx-sender, referee: referee }))
+      (referrer-profile (unwrap! (map-get? user-profiles { user: tx-sender }) err-not-found))
+    )
+    (asserts! (> (get successful-projects referrer-profile) u0) err-unauthorized)
+    (asserts! (not (is-eq tx-sender referee)) err-self-referral)
+    (asserts! (is-none existing-ref) err-already-referred)
+    (try! (stx-transfer? stake tx-sender (as-contract tx-sender)))
+    (map-set referrals { referral-id: referral-id }
+      { referrer: tx-sender, referee: referee, stake-amount: stake, projects-completed: u0, total-earnings: u0, rewards-claimed: u0, created-at: stacks-block-height, is-active: true }
+    )
+    (map-set user-referrals { referrer: tx-sender, referee: referee } { referral-id: referral-id })
+    (update-referrer-stats tx-sender u1 true)
+    (var-set next-referral-id (+ referral-id u1))
+    (ok referral-id)
+  )
+)
+
+(define-public (process-referral-reward (project-id uint))
+  (let
+    (
+      (project (unwrap! (map-get? projects { project-id: project-id }) err-not-found))
+      (ref-data (map-get? user-referrals { referrer: (get client project), referee: (get freelancer project) }))
+    )
+    (match ref-data
+      some-ref (try! (update-referral-on-completion (get referral-id some-ref) (get total-amount project)))
+      true
+    )
+    (ok true)
+  )
+)
+
+(define-private (update-referral-on-completion (referral-id uint) (project-amount uint))
+  (let
+    (
+      (referral (unwrap! (map-get? referrals { referral-id: referral-id }) err-referral-not-found))
+      (reward (/ (* project-amount (var-get referral-reward-rate)) u10000))
+    )
+    (map-set referrals { referral-id: referral-id }
+      (merge referral { projects-completed: (+ (get projects-completed referral) u1), total-earnings: (+ (get total-earnings referral) reward) })
+    )
+    (ok true)
+  )
+)
+
+(define-public (claim-referral-rewards (referral-id uint))
+  (let
+    (
+      (referral (unwrap! (map-get? referrals { referral-id: referral-id }) err-referral-not-found))
+      (claimable (- (get total-earnings referral) (get rewards-claimed referral)))
+    )
+    (asserts! (is-eq (get referrer referral) tx-sender) err-unauthorized)
+    (asserts! (> claimable u0) err-invalid-amount)
+    (try! (as-contract (stx-transfer? claimable tx-sender (get referrer referral))))
+    (map-set referrals { referral-id: referral-id }
+      (merge referral { rewards-claimed: (get total-earnings referral) })
+    )
+    (ok claimable)
+  )
+)
+
+(define-private (update-referrer-stats (referrer principal) (count-change uint) (is-new bool))
+  (let
+    (
+      (stats (default-to { total-referrals: u0, active-referrals: u0, total-rewards: u0, success-rate: u0 } (map-get? referrer-stats { referrer: referrer })))
+    )
+    (map-set referrer-stats { referrer: referrer }
+      (merge stats { total-referrals: (if is-new (+ (get total-referrals stats) count-change) (get total-referrals stats)), active-referrals: (+ (get active-referrals stats) count-change) })
+    )
+  )
+)
+
+(define-read-only (get-referral (referral-id uint))
+  (map-get? referrals { referral-id: referral-id })
+)
+
+(define-read-only (get-referrer-stats (referrer principal))
+  (map-get? referrer-stats { referrer: referrer })
+)
+
+(define-read-only (get-user-referral-link (referrer principal) (referee principal))
+  (map-get? user-referrals { referrer: referrer, referee: referee })
 )
