@@ -20,6 +20,9 @@
 (define-constant err-self-referral (err u113))
 (define-constant err-stake-locked (err u114))
 
+(define-constant err-invalid-bonus (err u115))
+(define-constant err-bonus-expired (err u116))
+
 (define-data-var next-referral-id uint u1)
 (define-data-var referral-reward-rate uint u500)
 (define-data-var min-referral-stake uint u100000)
@@ -775,4 +778,100 @@
 
 (define-read-only (get-user-referral-link (referrer principal) (referee principal))
   (map-get? user-referrals { referrer: referrer, referee: referee })
+)
+
+(define-map milestone-bonuses
+  { milestone-id: uint }
+  { 
+    bonus-amount: uint,
+    deadline-blocks: uint,
+    early-completion-threshold: uint,
+    is-claimed: bool
+  }
+)
+
+(define-public (set-milestone-bonus 
+  (milestone-id uint) 
+  (bonus-amount uint) 
+  (deadline-blocks uint)
+  (early-threshold uint))
+  (let
+    (
+      (milestone (unwrap! (map-get? milestones { milestone-id: milestone-id }) err-not-found))
+      (project (unwrap! (map-get? projects { project-id: (get project-id milestone) }) err-not-found))
+    )
+    (asserts! (is-eq (get client project) tx-sender) err-unauthorized)
+    (asserts! (is-eq (get status milestone) "pending") err-invalid-status)
+    (asserts! (> bonus-amount u0) err-invalid-bonus)
+    (asserts! (> deadline-blocks u0) err-invalid-bonus)
+    (asserts! (and (> early-threshold u0) (<= early-threshold u100)) err-invalid-bonus)
+    (try! (stx-transfer? bonus-amount tx-sender (as-contract tx-sender)))
+    (map-set milestone-bonuses
+      { milestone-id: milestone-id }
+      {
+        bonus-amount: bonus-amount,
+        deadline-blocks: deadline-blocks,
+        early-completion-threshold: early-threshold,
+        is-claimed: false
+      }
+    )
+    (ok true)
+  )
+)
+
+(define-private (calculate-time-bonus (milestone-id uint) (completion-block uint))
+  (let
+    (
+      (milestone (unwrap! (map-get? milestones { milestone-id: milestone-id }) (ok u0)))
+      (bonus-data (map-get? milestone-bonuses { milestone-id: milestone-id }))
+      (due-date (get due-date milestone))
+      (blocks-early (if (< completion-block due-date) (- due-date completion-block) u0))
+    )
+    (match bonus-data
+      some-bonus
+        (if (get is-claimed some-bonus)
+          (ok u0)
+          (if (>= blocks-early (get early-completion-threshold some-bonus))
+            (ok (/ (* (get bonus-amount some-bonus) blocks-early) (get deadline-blocks some-bonus)))
+            (ok u0)
+          )
+        )
+      (ok u0)
+    )
+  )
+)
+
+(define-public (approve-milestone-with-bonus (milestone-id uint))
+  (let
+    (
+      (milestone (unwrap! (map-get? milestones { milestone-id: milestone-id }) err-not-found))
+      (project (unwrap! (map-get? projects { project-id: (get project-id milestone) }) err-not-found))
+      (completion-block (unwrap! (get completed-at milestone) err-invalid-status))
+      (time-bonus (unwrap! (calculate-time-bonus milestone-id completion-block) err-invalid-bonus))
+      (total-payment (+ (get amount milestone) time-bonus))
+    )
+    (asserts! (is-eq (get client project) tx-sender) err-unauthorized)
+    (asserts! (is-eq (get status milestone) "submitted") err-invalid-status)
+    (if (> time-bonus u0)
+      (begin
+        (try! (as-contract (stx-transfer? time-bonus tx-sender (get freelancer project))))
+        (map-set milestone-bonuses
+          { milestone-id: milestone-id }
+          (merge (unwrap! (map-get? milestone-bonuses { milestone-id: milestone-id }) err-not-found)
+            { is-claimed: true }
+          )
+        )
+      )
+      true
+    )
+    (ok time-bonus)
+  )
+)
+
+(define-read-only (get-milestone-bonus (milestone-id uint))
+  (map-get? milestone-bonuses { milestone-id: milestone-id })
+)
+
+(define-read-only (calculate-potential-bonus (milestone-id uint))
+  (calculate-time-bonus milestone-id stacks-block-height)
 )
